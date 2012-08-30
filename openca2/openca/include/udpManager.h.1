@@ -1,0 +1,1001 @@
+#ifndef _UDP_MANAGER_H_RESEND
+#define _UDP_MANAGER_H_RESEND
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <sys/time.h>
+
+#include <netdb.h>			//TANG 0412: why this?
+
+#include "tablemgr.h"
+#include "logfile.h"
+
+
+#define RECVRESP_DELETE_ONE_REQUEST		0
+#define RECVRESP_DELETE_ALL_REQUEST		1
+#define RECVRESP_STOP_RESTRANSMITION	2	//when using this option, 't_lifetime' must be specified
+
+#define HASH_TABLE_UDP_RESEND			12289
+#define MAX_TABLE_UDP_RESEND			((HASH_TABLE_UDP_RESEND/8 + 1)*8)
+#define TABLE_UDP_RESEND_KEY_NUMBER		2
+
+#define UDP_RESEND_MSG_SIZE				1024
+
+#define MAX_DEST_ADDR_NUMBER			8
+
+
+struct ipport_t
+{
+	unsigned int	ip;
+	unsigned short	port;
+};
+
+
+template<class MSG_KEY>
+struct UDP_TABLE_STRUCT_T
+{
+//public:
+    int   next[TABLE_UDP_RESEND_KEY_NUMBER];
+    int   ipre;
+    int   inext;
+
+	MSG_KEY			key;				//key1	//key2
+	ipport_t		addrs[MAX_DEST_ADDR_NUMBER];//key2
+	
+	time_t			t_willDelete;
+	int				len;
+	char 			buffer[UDP_RESEND_MSG_SIZE];
+	int				sent;
+	int				delay_ms;
+	struct timeval	lastSendTime;
+	int				totalSend;
+	
+	char			msgname[32];		//TANG 2004.04.12
+	
+	//TANG 2003.10.29
+	int				flag_direction;		//key1	//key2
+										//1, RecvRequest or SendAnswer		//Request IN
+										//0, SendRequest or RecvAnswer		//Request OUT
+};
+
+
+template<class MSG_KEY>
+struct UDP_BUFFER_T					//define in share memory
+{
+//public:
+    int								cnt;
+    int             				hash1[HASH_TABLE_UDP_RESEND];
+    int             				hash2[HASH_TABLE_UDP_RESEND];
+    UDP_TABLE_STRUCT_T<MSG_KEY>   	msg[MAX_TABLE_UDP_RESEND];
+    unsigned char   				mapbuf[MAX_TABLE_UDP_RESEND/4];
+};	
+    
+
+
+
+template<class MSG_KEY>
+class UDPResendManager_t						//define in application
+{
+public:
+	UDPResendManager_t()
+	{
+		classAlive = 1;
+		pData = NULL;
+		ptable_msg = NULL;
+		sockfd = -1;
+		plog = NULL;
+		flag_checking = 0;
+		t_runonce = time(NULL);
+		flag_log_binary_msg = 1;
+	}
+	~UDPResendManager_t(){ classAlive = 0; }
+	
+private:
+	int								classAlive;
+	int								sockfd;
+	UDP_BUFFER_T<MSG_KEY> * 		pData;
+	UDP_TABLE_STRUCT_T<MSG_KEY> *	ptable_msg;
+	
+	TableMgr < UDP_TABLE_STRUCT_T<MSG_KEY> > table_msg;
+	
+	LogFile * plog;					//TANG 2003.10.22
+	
+	int flag_checking;
+	
+	time_t t_runonce;				//TANG 2004.04.13
+	
+	int flag_log_binary_msg;		//TANG 2004.06.24
+	
+protected:
+	static void (*fpbuildkey)(MSG_KEY & data, char * key);
+	static void udpBuildKey1(UDP_TABLE_STRUCT_T<MSG_KEY> & data, char * key);
+	static void udpBuildKey2(UDP_TABLE_STRUCT_T<MSG_KEY> & data, char * key);
+	
+	//TANG 2004.02.20
+	static void (*timeout_processing)(MSG_KEY & data, void * msg, int msglen);
+	static int (*checking_response)(void * reqmsg, void * respmsg);
+
+private:
+	char * string_addr(unsigned int ip)
+	{
+		struct sockaddr_in addr;
+		bzero(&addr, sizeof(addr));	
+		memcpy(&addr.sin_addr.s_addr, &ip, 4);
+		return inet_ntoa(addr.sin_addr);
+	}
+
+public:
+	int		SendMsg(char * msgname, MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int ntimes = 3, int delayms = 2000);
+	int		SendMsg(char * msgname, MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from,            int ntimes = 3, int delayms = 2000);
+	int		SendMsg(MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int ntimes = 3, int delayms = 2000);
+	int		SendMsg(MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from,            int ntimes = 3, int delayms = 2000);
+	int		RecvMsg(MSG_KEY * keystruct, unsigned int ip, unsigned short port, int flag = RECVRESP_DELETE_ONE_REQUEST, int t_lifetime = 30, void * respmsg = NULL, int respmsglen = 0);
+	int		RecvMsg(MSG_KEY * keystruct, struct sockaddr_in * from, int flag = RECVRESP_DELETE_ONE_REQUEST, int t_lifetime = 30, void * respmsg = NULL, int respmsglen = 0);
+	
+	int 	SendTo(int udpsock, void * buf, int len, unsigned int ip, unsigned short port);
+	
+	//TANG 2003.10.29
+	int		SendMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int t_lifetime = 30);
+	int		SendMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from,            int t_lifetime = 30);
+	int		SendMsgResponse(MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int t_lifetime = 30);
+	int		SendMsgResponse(MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from,            int t_lifetime = 30);
+	int		isRepeatedRequest(MSG_KEY * keystruct, unsigned int ip, unsigned short port);
+	int		isRepeatedRequest(MSG_KEY * keystruct, struct sockaddr_in * from);
+	
+	//TANG 2004.04.12
+	int		UpdateMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int t_lifetime = 30);
+	int		UpdateMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from,            int t_lifetime = 30);
+	
+	//TANG 2003.11.07
+	int		RemoveResponse(MSG_KEY * keystruct, unsigned int ip, unsigned short port);
+	
+	//TANG 2003.11.21
+	int		SendMsgToMultiServer(char * msgname, MSG_KEY * keystruct, void * buf, int len, int server_num, ipport_t * paddr, int ntimes = 3, int delayms = 2000);
+	
+	int		Init(int udpsock, int nsem, UDP_BUFFER_T<MSG_KEY> * pdata, void (*build1)(MSG_KEY & data,char* key));
+	int		SetUdpSockfd(int sock);
+	int		SetpLog(LogFile * plog1);
+	int		SetFlagLogBinaryMsg(int flag);		//TANG 2004.06.24
+	
+	int		SetCallBack_Timeout(void (*build1)(MSG_KEY & data, void * msg, int msglen));
+	int		SetCallBack_CheckReply(int (*build1)(void * reqmsg, void * respmsg));
+	
+	void 	Run();								//used in a user specific thread, unlimit loop
+	void	RunOnce(int flag_mustdo = 0);		//scan table for only once
+	int		checktime_ms(struct timeval & last)		//return in ms
+	{
+				struct timeval tm;
+				gettimeofday(&tm, NULL);
+				return ((int)(tm.tv_sec-last.tv_sec)*1000 + (int)(tm.tv_usec-last.tv_usec)/1000);
+	}
+};
+
+
+template<class MSG_KEY> 
+void (* UDPResendManager_t<MSG_KEY>::fpbuildkey)(MSG_KEY & data, char * key) = NULL;
+
+template<class MSG_KEY> 
+void (* UDPResendManager_t<MSG_KEY>::timeout_processing)(MSG_KEY & data, void * msg, int msglen) = NULL;
+
+template<class MSG_KEY> 
+int (* UDPResendManager_t<MSG_KEY>::checking_response)(void * reqmsg, void * respmsg) = NULL;
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SetUdpSockfd(int sock) 
+{
+	sockfd = sock;
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SetpLog(LogFile * plog1) 
+{
+	plog = plog1;
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SetFlagLogBinaryMsg(int flag) 
+{
+	flag_log_binary_msg = flag;
+	return 1;
+}
+
+
+template<class MSG_KEY>
+void UDPResendManager_t<MSG_KEY>::udpBuildKey1(UDP_TABLE_STRUCT_T<MSG_KEY> & data, char * key)
+{
+	(*fpbuildkey)(data.key, key);
+	sprintf(&key[strlen(key)], "|%d", data.flag_direction);
+	return;
+}
+
+
+template<class MSG_KEY>
+void UDPResendManager_t<MSG_KEY>::udpBuildKey2(UDP_TABLE_STRUCT_T<MSG_KEY> & data, char * key)
+{
+	(*fpbuildkey)(data.key, key);
+	sprintf(&key[strlen(key)], "|%d", data.flag_direction);
+	sprintf(&key[strlen(key)], "|%x:%d", data.addrs[0].ip, data.addrs[0].port);
+	return;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::
+Init(int udpsock, int nsem, UDP_BUFFER_T<MSG_KEY> * pdata, void (*build1)(MSG_KEY & data,char* key))
+{
+	sockfd = udpsock;
+	pData = pdata;
+	ptable_msg = &pData->msg[0];
+	
+	fpbuildkey = build1;
+	
+	table_msg.Init(&pData->cnt,
+			nsem,
+			&pData->msg[0],
+			&pData->mapbuf[0],
+			MAX_TABLE_UDP_RESEND,
+			HASH_TABLE_UDP_RESEND, 
+			TABLE_UDP_RESEND_KEY_NUMBER, 
+			&pData->hash1[0],
+			&pData->hash2[0],
+			udpBuildKey1,
+			udpBuildKey2);
+	
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::
+SetCallBack_Timeout(void (*build1)(MSG_KEY & data, void * msg, int msglen))
+{
+	timeout_processing = build1;
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::
+SetCallBack_CheckReply(int (*build1)(void * reqmsg, void * respmsg))
+{
+	checking_response = build1;
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::isRepeatedRequest(MSG_KEY * keystruct, unsigned int ip, unsigned short port)
+{
+	int	index;
+	char key[512];
+	
+	bzero(key, sizeof(key));
+	(*fpbuildkey)(*keystruct, key);
+	sprintf(&key[strlen(key)], "|%d", 1);		//Request IN
+	sprintf(&key[strlen(key)], "|%x:%d", ip, port);
+	
+	index = table_msg.Select(key, 1);
+	if ( index )
+	{
+		//resend pre answer
+		SendTo(sockfd, ptable_msg[index].buffer, ptable_msg[index].len, ptable_msg[index].addrs[0].ip, ptable_msg[index].addrs[0].port);
+		ptable_msg[index].sent++;
+		gettimeofday(&ptable_msg[index].lastSendTime, NULL);
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::isRepeatedRequest(): UDP(%d) resend response %d times to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			ptable_msg[index].sent, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+		return 1;
+	}
+	
+	//TANG 2003.11.03
+	//it's the first Request message, will insert a NULL response to table automatically, 
+	//if there are real answer, this NULL response will be replaced
+	//don't need to call SendMsgResponse() because there are none old response msg, so no checking
+	//SendMsg(keystruct, &index, 0, ip, port, 1, 0, 30);		//parameter 'buf' is not important, 'len' is 0
+	//TANG 2004.04.12
+	SendMsgResponse("nullResponse", keystruct, &index, 0, ip, port, 30);	//parameter 'buf' is not important, 'len' is 0
+	
+	return 0;
+}
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::isRepeatedRequest(MSG_KEY * keystruct, struct sockaddr_in * from)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return isRepeatedRequest(keystruct, ip, port);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::RemoveResponse(MSG_KEY * keystruct, unsigned int ip, unsigned short port)
+{
+	int isSomeDeleted = 0;
+	int	index;
+	char key[512];
+	
+	bzero(key, sizeof(key));
+	(*fpbuildkey)(*keystruct, key);
+	sprintf(&key[strlen(key)], "|%d", 1);		//Request IN
+	sprintf(&key[strlen(key)], "|%x:%d", ip, port);
+	
+	index = 0;
+	while ( (index = table_msg.SelectNext(key, index, 1)) ){
+		ptable_msg[index].t_willDelete = time(NULL);		//not delete here
+		if ( plog) plog->logwrite(4, "UDPM(%d)::RemoveResponse(): UDP(%d) delete response msg '%s' key='%s'\n", 
+			sockfd, 
+			index, 
+			ptable_msg[index].msgname, 
+			key
+			);
+		isSomeDeleted = 1;
+	}
+	
+	if ( isSomeDeleted ) RunOnce(1);						//delete here
+	
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsgResponse(MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from, int t_lifetime)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return SendMsgResponse(keystruct, buf, len, ip, port, t_lifetime);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsgResponse(MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int t_lifetime)
+{
+	return SendMsgResponse("unknown", keystruct, buf, len, ip, port, t_lifetime);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from, int t_lifetime)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return SendMsgResponse(msgname, keystruct, buf, len, ip, port, t_lifetime);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int t_lifetime)
+{
+	//if there are old response msg, delete it first
+	RemoveResponse(keystruct, ip, port);
+	
+	if ( t_lifetime == 0 ) t_lifetime = 30;
+	
+	//return SendMsg(keystruct, buf, len, ip, port, 1, 0, t_lifetime);
+	
+	//TANG 2004.04.12
+	if ( plog ) plog->logwrite(4, "UDPM(%d)::SendAnswer(): destination addr is %s:%d\n", 
+		sockfd, string_addr(ip), port);
+	
+	if ( len > UDP_RESEND_MSG_SIZE ){
+		if ( plog ) plog->logwrite(1, "UDPM(%d)::SendAnswer(): msglen = %d bigger than buffer size, no resend, error\n", 
+			sockfd, len);
+		return SendTo(sockfd, buf, len, ip, port);
+	}
+	
+	//insert into table
+	//TANG 2003.11.17
+	int index = 0;
+	UDP_TABLE_STRUCT_T<MSG_KEY> msg1;
+	bzero(&msg1, sizeof(msg1));
+	//
+	memcpy(&msg1.key, keystruct, sizeof(MSG_KEY));
+	msg1.addrs[0].ip = ip;
+	msg1.addrs[0].port = port;
+	//
+	msg1.t_willDelete = time(NULL) + t_lifetime;
+	msg1.flag_direction = 1;				//Request IN
+	//
+	msg1.len = len;
+	if ( len > 0 ) memcpy(msg1.buffer, buf, len);
+	msg1.sent = 1;
+	msg1.delay_ms = 0;
+	msg1.lastSendTime.tv_sec = 0;				//don't check resend now
+	msg1.lastSendTime.tv_usec = 0;
+	msg1.totalSend = 1;
+	//
+	if ( msgname ){
+		strncpy(msg1.msgname, msgname, sizeof(msg1.msgname)-1);
+	}
+	
+	if ( (index = table_msg.Insert(msg1)) == 0 ){
+		if ( plog ) plog->logwrite(1, "UDPM(%d)::SendAnswer(): table_msg.Insert() error, no resend\n", sockfd);
+		SendTo(sockfd, buf, len, ip, port);
+		return 0;	//TANG 2004.02.20
+	}
+	
+	//send udp message
+	if ( !SendTo(sockfd, buf, len, ip, port) ){
+		//TANG 2003.11.27
+		//table_msg.Delete(index);
+		ptable_msg[index].t_willDelete = time(NULL);		//not delete here
+		return 0;
+	}
+	
+	//set last send time
+	gettimeofday(&ptable_msg[index].lastSendTime, NULL);	//for check resend time
+	
+	if ( ptable_msg[index].flag_direction ){
+		//Request IN
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::SendAnswer(): UDP(%d) send to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+	}else{
+		//Request OUT
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::SendRequest(): UDP(%d) resend %d times to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			ptable_msg[index].sent, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+	}
+	if ( ptable_msg[index].len > 0 ){
+		if ( flag_log_binary_msg ){
+			if ( plog ) plog->logwrite(4, ptable_msg[index].len, (unsigned char *)ptable_msg[index].buffer);
+		}
+	}
+	
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsg(MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from, int ntimes, int delayms)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return SendMsg(keystruct, buf, len, ip, port, ntimes, delayms);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsg(MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int ntimes, int delayms)
+{
+	return SendMsg("unknown", keystruct, buf, len, ip, port, ntimes, delayms);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsg(char * msgname, MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from, int ntimes, int delayms)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return SendMsg(msgname, keystruct, buf, len, ip, port, ntimes, delayms);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsg(char * msgname, MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int ntimes, int delayms)
+{
+	ipport_t addr1;
+	addr1.ip = ip;
+	addr1.port = port;
+	
+	return SendMsgToMultiServer(msgname, keystruct, buf, len, 1, &addr1, ntimes, delayms);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendMsgToMultiServer(char * msgname, MSG_KEY * keystruct, void * buf, int len, int server_num, ipport_t * paddr, int ntimes, int delayms)
+{
+	if ( server_num <= 0 ) return 0;
+	if ( server_num > MAX_DEST_ADDR_NUMBER ) server_num = MAX_DEST_ADDR_NUMBER;
+	
+	int iserver = -1;
+	for ( int i=0; i<server_num; i++ ){
+		if ( paddr[i].ip && paddr[i].port ){
+			iserver = i;
+			break;
+		}
+	}
+	if ( iserver < 0 ) return 0;
+	
+	if ( plog ) plog->logwrite(4, "UDPM(%d)::SendMsg(): destination addr is %s:%d\n", 
+		sockfd, 
+		string_addr(paddr[iserver].ip), paddr[iserver].port);
+	
+	if ( len > UDP_RESEND_MSG_SIZE ){
+		if ( plog ) plog->logwrite(1, "UDPM(%d)::SendMsg(): msglen = %d bigger than buffer size, no resend, error\n", 
+			sockfd, len);
+		return SendTo(sockfd, buf, len, paddr[iserver].ip, paddr[iserver].port);
+	}
+	
+	//insert into table
+	//TANG 2003.11.17
+	int index = 0;
+	UDP_TABLE_STRUCT_T<MSG_KEY> msg1;
+	bzero(&msg1, sizeof(msg1));
+	
+	memcpy(&msg1.key, keystruct, sizeof(MSG_KEY));
+	//msg1.addrs[0].ip = ip;
+	//msg1.addrs[0].port = port;
+	for ( int i=0; i<(server_num - iserver); i++ ){
+		msg1.addrs[i].ip   = paddr[iserver+i].ip;
+		msg1.addrs[i].port = paddr[iserver+i].port;
+	}
+	//
+	msg1.t_willDelete = 0;
+	msg1.flag_direction = 0;				//Request OUT
+	//
+	msg1.len = len;
+	if ( len > 0 ) memcpy(msg1.buffer, buf, len);
+	msg1.sent = 1;
+	msg1.delay_ms = delayms;
+	msg1.lastSendTime.tv_sec = 0;				//don't check resend now
+	msg1.lastSendTime.tv_usec = 0;
+	msg1.totalSend = ntimes;
+	//
+	if ( msgname ){
+		strncpy(msg1.msgname, msgname, sizeof(msg1.msgname)-1);
+	}
+	
+	if ( (index = table_msg.Insert(msg1)) == 0 ){
+		if ( plog ) plog->logwrite(1, "UDPM(%d)::SendMsg(): table_msg.Insert() error, no resend\n", sockfd);
+		SendTo(sockfd, buf, len, paddr[iserver].ip, paddr[iserver].port);
+		return 0;	//TANG 2004.02.20
+	}
+	
+	//send udp message
+	if ( !SendTo(sockfd, buf, len, paddr[iserver].ip, paddr[iserver].port) ){
+		//TANG 2003.11.27
+		//table_msg.Delete(index);
+		ptable_msg[index].t_willDelete = time(NULL);		//not delete here
+		return 0;
+	}
+	
+	//set last send time
+	gettimeofday(&ptable_msg[index].lastSendTime, NULL);	//for check resend time
+	
+	if ( ptable_msg[index].flag_direction ){
+		//Request IN
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::SendAnswer(): UDP(%d) send to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+	}else{
+		//Request OUT
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::SendRequest(): UDP(%d) resend %d times to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			ptable_msg[index].sent, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+	}
+	if ( ptable_msg[index].len > 0 ){
+		if ( flag_log_binary_msg ){
+			if ( plog ) plog->logwrite(4, ptable_msg[index].len, (unsigned char *)ptable_msg[index].buffer);
+		}
+	}
+	
+	return 1;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::RecvMsg(MSG_KEY * keystruct, unsigned int ip, unsigned short port, int flag, int t_lifetime, void * respmsg, int respmsglen)
+{
+	int	index;
+	char key[512];
+	int retval = 0;
+	
+	bzero(key, sizeof(key));
+	(*fpbuildkey)(*keystruct, key);
+	sprintf(&key[strlen(key)], "|%d", 0);		//Request OUT
+	
+	if ( flag == RECVRESP_DELETE_ALL_REQUEST ){
+		//remove all message with "key"
+		index = 0;
+		while ( (index = table_msg.SelectNext(key, index, 0)) ){
+			//found relative request message
+			//TANG 2004.02.20
+			if ( checking_response ){
+				int ret1 = (*checking_response)(ptable_msg[index].buffer, respmsg);
+				if ( ret1 ){
+					ptable_msg[index].t_willDelete = time(NULL);		//not delete here
+					retval = 1;
+				}
+			}else{
+				ptable_msg[index].t_willDelete = time(NULL);			//not delete here
+				retval = 1;
+			}
+		}
+	}
+	else if ( flag == RECVRESP_DELETE_ONE_REQUEST ){
+		//remove only one message with "key" and "ip" "port"
+		sprintf(&key[strlen(key)], "|%x:%d", ip, port);
+		index = table_msg.Select(key, 1);
+		if ( index ){
+			//found relative request message
+			//TANG 2004.02.20
+			if ( checking_response ){
+				int ret1 = (*checking_response)(ptable_msg[index].buffer, respmsg);
+				if ( ret1 ){
+					ptable_msg[index].t_willDelete = time(NULL);		//not delete here
+					retval = 1;
+				}
+			}else{
+				ptable_msg[index].t_willDelete = time(NULL);			//not delete here
+				retval = 1;
+			}
+		}
+	}
+	else if ( flag == RECVRESP_STOP_RESTRANSMITION ){
+		//stop retransmition only for one message with "key" and "ip" "port"
+		sprintf(&key[strlen(key)], "|%x:%d", ip, port);
+		index = table_msg.Select(key, 1);
+		if ( index ){
+			//found relative request message
+			//TANG 2004.02.20
+			if ( checking_response ){
+				int ret1 = (*checking_response)(ptable_msg[index].buffer, respmsg);
+				if ( ret1 ){
+					ptable_msg[index].t_willDelete = time(NULL) + t_lifetime;	//not delete now
+					retval = 1;
+				}
+			}else{
+				ptable_msg[index].t_willDelete = time(NULL) + t_lifetime;		//not delete now
+				retval = 1;
+			}
+		}
+	}
+	else{
+		return retval;
+	}
+	
+	return retval;
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::RecvMsg(MSG_KEY * keystruct, struct sockaddr_in * from, int flag, int t_lifetime, void * respmsg, int respmsglen)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return RecvMsg(keystruct, ip, port, flag, t_lifetime, respmsg, respmsglen);
+}
+
+
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::SendTo(int udpsock, void * buf, int len, unsigned int ip, unsigned short port)
+{
+	if ( len == 0 ) return 1;		//TANG 2003.10.29
+	
+	if ( udpsock <= 0 ){
+		if ( plog ) plog->logwrite(1, "UDPM::SendTo(): udpsockfd = %d error\n", udpsock);
+		return 0;
+	}
+	if ( ip == 0 || port == 0 ){
+		if ( plog ) plog->logwrite(1, "UDPM::SendTo(): destination ip = %x port = %d, error\n", ip, port);
+		return 0;
+	}
+	
+	struct sockaddr_in to_addr;
+	bzero(&to_addr, sizeof(to_addr));
+
+	to_addr.sin_family = AF_INET;
+	memcpy(&to_addr.sin_addr.s_addr, &ip, sizeof(unsigned int));
+	//to_addr.sin_addr.s_addr = htonl(ip);
+	to_addr.sin_port = htons(port);
+	
+	if ( sendto(udpsock, buf, len, 0, (struct sockaddr *)&to_addr, sizeof(struct sockaddr_in) ) < 0 ){
+		perror("UDPResendManager_t::sendto() error\n");
+		if ( plog ) plog->logwrite(1, "UDPM::sendto() error=%d\n", errno);
+		return 0;
+	}
+	
+	return 1;
+}
+
+
+template<class MSG_KEY>
+void UDPResendManager_t<MSG_KEY>::Run()
+{
+	struct timeval tv_sleep;
+	
+	while ( classAlive ){
+	    //check table
+		RunOnce();
+	    
+	    if ( table_msg.GetUsedCount() ){
+		    tv_sleep.tv_sec = 0;
+		    tv_sleep.tv_usec = 300*1000;
+		}else{
+		    tv_sleep.tv_sec = 0;
+		    tv_sleep.tv_usec = 500*1000;
+		}
+	    select(0, NULL, NULL, NULL, &tv_sleep);
+	}//end of while(1)
+	
+	return;
+}
+
+
+template<class MSG_KEY>
+void UDPResendManager_t<MSG_KEY>::RunOnce(int flag_mustdo) 
+{
+	time_t tnow;
+	
+	if ( flag_mustdo == 0 ){
+		//check time, if last RunOnce() was called within 1 sec, then wait next time to do
+		tnow = time(NULL);
+		if ( tnow - t_runonce == 0 ){
+			return;
+		}
+	}
+	if ( flag_mustdo == 0 ){
+		if ( flag_checking ) return;	//someone is checking now
+	}
+	
+	//begin RunOnce()
+	flag_checking = 1;
+	t_runonce = time(NULL);
+	
+	struct timeval time_sleep;
+	int tmpi, checkNum = 0;
+    
+    int loopcount_msg = 0;
+    
+    int index = 0;
+    while ( (index = table_msg.ScanNext(index)) )
+    {
+    	//TANG 2003.11.26
+		loopcount_msg++;
+		if ( loopcount_msg > MAX_TABLE_UDP_RESEND ){
+			if ( plog ) plog->logwrite(1, "UDPM(%d)::RunOnce(): ScanNext() loop error\n", sockfd);
+			break;
+		}
+    	
+    	tnow = time(NULL);
+    	if ( ptable_msg[index].t_willDelete ){
+    		if ( tnow >= ptable_msg[index].t_willDelete ){
+				if ( plog ) plog->logwrite(4, "UDPM(%d)::RunOnce(): UDP(%d) remove resend %d/%d times to %s:%d msg '%s' %d bytes\n", 
+					sockfd, 
+					index, 
+					ptable_msg[index].sent, 
+					ptable_msg[index].totalSend, 
+					string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+					ptable_msg[index].msgname, 
+					ptable_msg[index].len
+					);
+	    		//delete this record
+	    		tmpi = table_msg.ScanPre(index);
+	    		table_msg.Delete(index);
+	    		index = tmpi;
+	    		continue;
+    		}else{
+    			//wait some time
+    			continue;
+    		}
+    	}
+    	else{
+    		//check time if needed
+    		if ( ptable_msg[index].lastSendTime.tv_sec ){
+    			//check
+    			if ( checktime_ms(ptable_msg[index].lastSendTime) >= ptable_msg[index].delay_ms ){
+    				//resend one more time?
+    				if ( ptable_msg[index].sent >= ptable_msg[index].totalSend ){
+    					//resend some times, give up now
+    					//TANG 2003.11.21
+    					//resend same msg to another server
+    					int ret1 = SendMsgToMultiServer(
+    									ptable_msg[index].msgname, 
+    									&ptable_msg[index].key, 
+										ptable_msg[index].buffer, 
+										ptable_msg[index].len, 
+										MAX_DEST_ADDR_NUMBER - 1, 
+										&ptable_msg[index].addrs[1], 
+										ptable_msg[index].totalSend, 
+										ptable_msg[index].delay_ms
+										);
+    					//TANG 2004.02.20
+    					if ( ret1 == 0 ){
+    						//no more msg send out, timeout
+    						if ( timeout_processing ) 
+    							(*timeout_processing)(ptable_msg[index].key, ptable_msg[index].buffer, ptable_msg[index].len);
+    					}
+    					//
+    					ptable_msg[index].t_willDelete = time(NULL);
+    					//if ( plog ) plog->logwrite(4, "UDPM(%d)::SendRequest(): UDP(%d) resent %d times to %s:%d, give up now\n", 
+    					//	sockfd, 
+    					//	index, 
+    					//	ptable_msg[index].totalSend, 
+    					//	string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port
+    					//	);
+    				}else{
+    					//resend needed
+    					if ( ptable_msg[index].t_willDelete ) continue;
+    					SendTo(sockfd, ptable_msg[index].buffer, ptable_msg[index].len, ptable_msg[index].addrs[0].ip, ptable_msg[index].addrs[0].port);
+    					ptable_msg[index].sent++;
+    					gettimeofday(&ptable_msg[index].lastSendTime, NULL);
+    					if ( plog ) plog->logwrite(4, "UDPM(%d)::SendRequest(): UDP(%d) resend %d times to %s:%d msg '%s' %d bytes\n", 
+    						sockfd, 
+    						index, 
+    						ptable_msg[index].sent, 
+    						string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+    						ptable_msg[index].msgname, 
+    						ptable_msg[index].len
+    						);
+    					checkNum++;
+    				}
+    			}else{
+    				; //don't need resend
+    			}
+    		}
+    		else{
+    			; //don't need check resend time, continue
+    		}
+    	}
+		
+		//some break time for stop a while		//TANG 0411
+		if ( checkNum >= 50 ){
+			checkNum = 0;
+			time_sleep.tv_sec = 0;
+			time_sleep.tv_usec = 1;
+			select(0, NULL, NULL, NULL, &time_sleep);
+		}
+    }//end of while()
+    
+	flag_checking = 0;
+	
+	return;
+}
+
+
+//only update response msg, no send
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::UpdateMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, struct sockaddr_in * from, int t_lifetime)
+{
+	unsigned int ip;
+	unsigned short port;
+	memcpy(&ip, &from->sin_addr.s_addr, sizeof(unsigned int));
+	port = ntohs(from->sin_port);
+	
+	return UpdateMsgResponse(msgname, keystruct, buf, len, ip, port, t_lifetime);
+}
+
+
+//only update response msg, no send
+template<class MSG_KEY>
+int UDPResendManager_t<MSG_KEY>::UpdateMsgResponse(char * msgname, MSG_KEY * keystruct, void * buf, int len, unsigned int ip, unsigned short port, int t_lifetime)
+{
+	//if there are old response msg, delete it first
+	RemoveResponse(keystruct, ip, port);
+	
+	if ( t_lifetime == 0 ) t_lifetime = 30;
+	
+	//TANG 2004.04.12
+	if ( plog ) plog->logwrite(4, "UDPM(%d)::UpdateAnswer(): destination addr is %s:%d\n", 
+		sockfd, string_addr(ip), port);
+	
+	if ( len > UDP_RESEND_MSG_SIZE ){
+		if ( plog ) plog->logwrite(1, "UDPM(%d)::UpdateAnswer(): msglen = %d bigger than buffer size, no resend, error\n", 
+			sockfd, len);
+		return 0;	//SendTo(sockfd, buf, len, ip, port);
+	}
+	
+	//insert into table
+	//TANG 2003.11.17
+	int index = 0;
+	UDP_TABLE_STRUCT_T<MSG_KEY> msg1;
+	bzero(&msg1, sizeof(msg1));
+	//
+	memcpy(&msg1.key, keystruct, sizeof(MSG_KEY));
+	msg1.addrs[0].ip = ip;
+	msg1.addrs[0].port = port;
+	//
+	msg1.t_willDelete = time(NULL) + t_lifetime;
+	msg1.flag_direction = 1;				//Request IN
+	//
+	msg1.len = len;
+	if ( len > 0 ) memcpy(msg1.buffer, buf, len);
+	msg1.sent = 1;
+	msg1.delay_ms = 0;
+	msg1.lastSendTime.tv_sec = 0;				//don't check resend now
+	msg1.lastSendTime.tv_usec = 0;
+	msg1.totalSend = 1;
+	//
+	if ( msgname ){
+		strncpy(msg1.msgname, msgname, sizeof(msg1.msgname)-1);
+	}
+	
+	if ( (index = table_msg.Insert(msg1)) == 0 ){
+		if ( plog ) plog->logwrite(1, "UDPM(%d)::UpdateAnswer(): table_msg.Insert() error, no resend\n", sockfd);
+		//SendTo(sockfd, buf, len, ip, port);
+		return 0;	//TANG 2004.02.20
+	}
+	
+	//send udp message
+	//if ( !SendTo(sockfd, buf, len, ip, port) ){
+	//	//TANG 2003.11.27
+	//	//table_msg.Delete(index);
+	//	ptable_msg[index].t_willDelete = time(NULL);		//not delete here
+	//	return 0;
+	//}
+	
+	//set last send time
+	gettimeofday(&ptable_msg[index].lastSendTime, NULL);	//for check resend time
+	
+	if ( ptable_msg[index].flag_direction ){
+		//Request IN
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::UpdateAnswer(): UDP(%d) to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+	}else{
+		//Request OUT
+		if ( plog ) plog->logwrite(4, "UDPM(%d)::SendRequest(): UDP(%d) resend %d times to %s:%d msg '%s' %d bytes\n", 
+			sockfd, 
+			index, 
+			ptable_msg[index].sent, 
+			string_addr(ptable_msg[index].addrs[0].ip), ptable_msg[index].addrs[0].port, 
+			ptable_msg[index].msgname, 
+			ptable_msg[index].len
+			);
+	}
+	if ( ptable_msg[index].len > 0 ){
+		if ( flag_log_binary_msg ){
+			if ( plog ) plog->logwrite(4, ptable_msg[index].len, (unsigned char *)ptable_msg[index].buffer);
+		}
+	}
+	
+	return 1;
+}
+
+
+#endif
+
